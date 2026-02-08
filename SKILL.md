@@ -1,38 +1,47 @@
 ---
 name: curl-to-code
-description: Converts curl commands to equivalent code in fetch, axios, requests, or other HTTP libraries
+description: Converts curl commands copied from browser devtools into equivalent Python requests, JavaScript fetch, or Node.js axios code.
 version: 0.1.0
 license: Apache-2.0
+tags:
+  - curl
+  - codegen
+  - python
+  - javascript
+  - node
 ---
 
 # curl-to-code
 
-Converts curl commands into equivalent HTTP client code in your language of choice. Paste a curl command from browser DevTools and get clean, working code back.
+Converts curl commands into equivalent code in Python (`requests`), JavaScript (`fetch`), or Node.js (`axios`).
 
-## Purpose
+## Usage
 
-Developers frequently copy curl commands from browser DevTools, API docs, or colleagues. Manually rewriting them into fetch, axios, or Python requests is tedious and error-prone. This tool automates the conversion.
+```bash
+# Default: Python requests output
+echo "curl -X POST https://api.example.com/data -H 'Content-Type: application/json' -d '{\"key\":\"value\"}'" | ./scripts/run.sh
 
-## Instructions
+# Specify language
+echo "curl https://api.example.com/users" | ./scripts/run.sh --lang=javascript
+echo "curl https://api.example.com/users" | ./scripts/run.sh --lang=node
 
-When a user provides a curl command and wants it converted to code:
+# Pass curl command as argument
+./scripts/run.sh --lang=python "curl -X GET https://api.example.com/users -H 'Authorization: Bearer token123'"
+```
 
-1. Run `./scripts/run.sh` with the curl command as input and the target language/library as a flag
-2. Supported targets: `--fetch`, `--axios`, `--requests`, `--go`, `--ruby`
-3. The tool parses curl flags (`-X`, `-H`, `-d`, `--data`, `-u`, etc.) and generates equivalent code
-4. Output goes to stdout
+## Supported curl flags
 
-## Inputs
+| Flag | Description |
+|------|-------------|
+| `-X`, `--request` | HTTP method (GET, POST, PUT, DELETE, etc.) |
+| `-H`, `--header` | Request header (repeatable) |
+| `-d`, `--data`, `--data-raw` | Request body data |
+| `-u`, `--user` | Basic auth credentials (`user:pass`) |
+| `--compressed` | Noted but not affecting output |
+| URL | Positional argument (with or without `curl` prefix) |
 
-- A curl command via stdin or as a quoted argument
-- A target language flag (default: `--fetch`)
+## Output languages
 
-## Outputs
-
-- Generated code to stdout, ready to copy-paste
-
-## Constraints
-
-- Supports common curl flags: `-X`, `-H`, `-d`, `--data`, `--data-raw`, `-u`, `--user`, `-b`, `--cookie`, `-L`, `-k`, `-o`
-- Does not execute the curl command
-- Does not handle curl flags for file uploads (`-F`) in this version
+- **python** (default) — uses the `requests` library
+- **javascript** — uses the browser `fetch` API
+- **node** — uses the `axios` library
