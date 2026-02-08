@@ -1,279 +1,251 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# run.sh — Convert curl commands to code
-# Usage: ./run.sh -q "curl ..." --lang fetch|axios|python|go
+# curl-to-code: convert curl commands to HTTP client code
 
-LANG="fetch"
+TARGET="fetch"
 CURL_CMD=""
+
+usage() {
+  cat <<'EOF'
+Usage: curl-to-code [OPTIONS] [CURL_COMMAND]
+
+Convert a curl command to HTTP client code.
+
+Options:
+  --fetch       Generate JavaScript fetch code (default)
+  --axios       Generate JavaScript axios code
+  --requests    Generate Python requests code
+  --go          Generate Go net/http code
+  --ruby        Generate Ruby net/http code
+  --help        Show this help message
+
+Input:
+  Pass the curl command as an argument (in quotes) or via stdin.
+
+Examples:
+  curl-to-code --fetch 'curl -X POST https://api.example.com/data -H "Content-Type: application/json" -d "{\"key\":\"value\"}"'
+  echo 'curl https://api.example.com/data' | curl-to-code --requests
+EOF
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -q) CURL_CMD="$2"; shift 2 ;;
-    --lang) LANG="$2"; shift 2 ;;
-    --help)
-      echo "Usage: run.sh [OPTIONS]"
-      echo ""
-      echo "Convert curl commands to code."
-      echo ""
-      echo "Options:"
-      echo "  -q COMMAND     The curl command to convert"
-      echo "  --lang LANG    Target: fetch, axios, python, go (default: fetch)"
-      echo "  --help         Show this help"
-      exit 0
-      ;;
-    -*) echo "Error: unknown option: $1" >&2; exit 2 ;;
-    *) echo "Error: unexpected argument: $1" >&2; exit 2 ;;
+    --fetch)    TARGET="fetch"; shift ;;
+    --axios)    TARGET="axios"; shift ;;
+    --requests) TARGET="requests"; shift ;;
+    --go)       TARGET="go"; shift ;;
+    --ruby)     TARGET="ruby"; shift ;;
+    --help)     usage; exit 0 ;;
+    -*)         echo "Error: unknown option '$1'" >&2; exit 1 ;;
+    *)          CURL_CMD="$1"; shift ;;
   esac
 done
 
-if [[ -z "$CURL_CMD" ]]; then
-  if [[ -t 0 ]]; then
-    echo "Error: no curl command provided. Use -q or pipe via stdin." >&2
-    exit 2
+# Read from stdin if no argument
+if [ -z "$CURL_CMD" ]; then
+  if [ -t 0 ]; then
+    echo "Error: no curl command provided" >&2
+    usage >&2
+    exit 1
   fi
   CURL_CMD=$(cat)
 fi
 
-if [[ -z "$CURL_CMD" ]]; then
-  echo "Error: empty curl command" >&2
-  exit 2
-fi
+# Strip leading "curl " if present
+CURL_CMD="${CURL_CMD#curl }"
 
-# Parse the curl command
-# Extract: URL, method, headers, data/body
-parse_result=$(echo "$CURL_CMD" | awk '
-BEGIN {
-  url = ""
-  method = "GET"
-  num_headers = 0
-  body = ""
-  content_type = ""
-}
+# Write curl command to temp file and invoke Python
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+printf '%s' "$CURL_CMD" > "$TMPFILE"
 
-{
-  line = $0
-  # Remove "curl " prefix
-  gsub(/^[[:space:]]*curl[[:space:]]+/, "", line)
-  # Remove backslash continuations
-  gsub(/\\[[:space:]]*$/, "", line)
+python3 - "$TMPFILE" "$TARGET" << 'PYEOF'
+import shlex
+import sys
+import json
 
-  n = split(line, tokens, " ")
-  i = 1
-  while (i <= n) {
+cmd_file = sys.argv[1]
+target = sys.argv[2]
+
+with open(cmd_file) as f:
+    cmd = f.read()
+
+try:
+    tokens = shlex.split(cmd)
+except ValueError as e:
+    print(f"Error: failed to parse curl command: {e}", file=sys.stderr)
+    sys.exit(1)
+
+url = ""
+method = "GET"
+headers = {}
+data = ""
+auth_user = ""
+auth_pass = ""
+cookies = ""
+follow_redirects = False
+insecure = False
+
+i = 0
+while i < len(tokens):
     tok = tokens[i]
+    if tok in ("-X", "--request"):
+        i += 1; method = tokens[i].upper()
+    elif tok in ("-H", "--header"):
+        i += 1
+        h = tokens[i]
+        key, _, val = h.partition(":")
+        headers[key.strip()] = val.strip()
+    elif tok in ("-d", "--data", "--data-raw", "--data-binary"):
+        i += 1; data = tokens[i]
+        if method == "GET":
+            method = "POST"
+    elif tok in ("-u", "--user"):
+        i += 1
+        parts = tokens[i].split(":", 1)
+        auth_user = parts[0]
+        auth_pass = parts[1] if len(parts) > 1 else ""
+    elif tok in ("-b", "--cookie"):
+        i += 1; cookies = tokens[i]
+    elif tok in ("-L", "--location"):
+        follow_redirects = True
+    elif tok in ("-k", "--insecure"):
+        insecure = True
+    elif tok.startswith("http://") or tok.startswith("https://"):
+        url = tok
+    elif not tok.startswith("-"):
+        url = tok
+    i += 1
 
-    # Remove quotes from token
-    gsub(/^'\''/, "", tok)
-    gsub(/'\''$/, "", tok)
-    gsub(/^"/, "", tok)
-    gsub(/"$/, "", tok)
+if not url:
+    print("Error: no URL found in curl command", file=sys.stderr)
+    sys.exit(1)
 
-    if (tok == "-X" || tok == "--request") {
-      i++
-      method = tokens[i]
-      gsub(/^'\''|'\''$|^"|"$/, "", method)
-    } else if (tok == "-H" || tok == "--header") {
-      i++
-      header = tokens[i]
-      # Rejoin if header value has spaces
-      while (i < n) {
-        next_tok = tokens[i+1]
-        if (next_tok ~ /^-/ || next_tok ~ /^http/ || next_tok ~ /^'\''/) break
-        if (substr(header, 1, 1) == "'\''") {
-          if (header ~ /'\''$/) break
-        } else if (substr(header, 1, 1) == "\"") {
-          if (header ~ /"$/) break
-        } else {
-          break
-        }
-        i++
-        header = header " " tokens[i]
-      }
-      gsub(/^'\''|'\''$|^"|"$/, "", header)
-      num_headers++
-      headers[num_headers] = header
-      if (tolower(header) ~ /^content-type:/) {
-        content_type = header
-        gsub(/^[Cc]ontent-[Tt]ype:[[:space:]]*/, "", content_type)
-      }
-    } else if (tok == "-d" || tok == "--data" || tok == "--data-raw" || tok == "--data-binary") {
-      i++
-      body = tokens[i]
-      # Rejoin body if it has spaces
-      while (i < n) {
-        next_tok = tokens[i+1]
-        if (substr(body, 1, 1) == "'\''") {
-          if (body ~ /'\''$/) break
-        } else if (substr(body, 1, 1) == "\"") {
-          if (body ~ /"$/) break
-        } else {
-          break
-        }
-        i++
-        body = body " " tokens[i]
-      }
-      gsub(/^'\''|'\''$|^"|"$/, "", body)
-      if (method == "GET") method = "POST"
-    } else if (tok ~ /^https?:/ || tok ~ /^'\''https?:/) {
-      url = tok
-      gsub(/^'\''|'\''$|^"|"$/, "", url)
-    }
+if target == "fetch":
+    print(f"const response = await fetch('{url}', {{")
+    print(f"  method: '{method}',")
+    if headers:
+        print("  headers: {")
+        for k, v in headers.items():
+            print(f"    '{k}': '{v}',")
+        print("  },")
+    if data:
+        try:
+            json.loads(data)
+            print(f"  body: JSON.stringify({data}),")
+        except (json.JSONDecodeError, TypeError):
+            print(f"  body: '{data}',")
+    if follow_redirects:
+        print("  redirect: 'follow',")
+    print("});")
+    print("")
+    print("const data = await response.json();")
 
-    i++
-  }
-}
+elif target == "axios":
+    print("const response = await axios({")
+    print(f"  method: '{method.lower()}',")
+    print(f"  url: '{url}',")
+    if headers:
+        print("  headers: {")
+        for k, v in headers.items():
+            print(f"    '{k}': '{v}',")
+        print("  },")
+    if data:
+        try:
+            json.loads(data)
+            print(f"  data: {data},")
+        except (json.JSONDecodeError, TypeError):
+            print(f"  data: '{data}',")
+    if auth_user:
+        print("  auth: {")
+        print(f"    username: '{auth_user}',")
+        print(f"    password: '{auth_pass}',")
+        print("  },")
+    if not follow_redirects:
+        print("  maxRedirects: 0,")
+    print("});")
 
-END {
-  print "URL=" url
-  print "METHOD=" method
-  print "BODY=" body
-  print "CONTENT_TYPE=" content_type
-  print "NUM_HEADERS=" num_headers
-  for (i = 1; i <= num_headers; i++) {
-    print "HEADER_" i "=" headers[i]
-  }
-}
-')
+elif target == "requests":
+    print("import requests")
+    print("")
+    args = [f"'{url}'"]
+    if headers:
+        h_items = ", ".join([f"'{k}': '{v}'" for k, v in headers.items()])
+        print(f"headers = {{{h_items}}}")
+        args.append("headers=headers")
+    if data:
+        try:
+            json.loads(data)
+            args.append(f"json={data}")
+        except (json.JSONDecodeError, TypeError):
+            args.append(f"data='{data}'")
+    if auth_user:
+        args.append(f"auth=('{auth_user}', '{auth_pass}')")
+    if not follow_redirects and method != "GET":
+        args.append("allow_redirects=False")
+    if insecure:
+        args.append("verify=False")
+    if cookies:
+        args.append(f"cookies={{'cookie': '{cookies}'}}")
+    print(f"response = requests.{method.lower()}({', '.join(args)})")
+    print("print(response.json())")
 
-# Extract parsed values
-URL=$(echo "$parse_result" | grep "^URL=" | sed 's/^URL=//')
-METHOD=$(echo "$parse_result" | grep "^METHOD=" | sed 's/^METHOD=//')
-BODY=$(echo "$parse_result" | grep "^BODY=" | sed 's/^BODY=//')
-CONTENT_TYPE=$(echo "$parse_result" | grep "^CONTENT_TYPE=" | sed 's/^CONTENT_TYPE=//')
-NUM_HEADERS=$(echo "$parse_result" | grep "^NUM_HEADERS=" | sed 's/^NUM_HEADERS=//')
+elif target == "go":
+    print("package main")
+    print("")
+    print("import (")
+    print('\t"fmt"')
+    print('\t"io"')
+    print('\t"net/http"')
+    if data:
+        print('\t"strings"')
+    print(")")
+    print("")
+    print("func main() {")
+    if data:
+        print(f'\tbody := strings.NewReader(`{data}`)')
+        print(f'\treq, err := http.NewRequest("{method}", "{url}", body)')
+    else:
+        print(f'\treq, err := http.NewRequest("{method}", "{url}", nil)')
+    print("\tif err != nil {")
+    print("\t\tpanic(err)")
+    print("\t}")
+    for k, v in headers.items():
+        print(f'\treq.Header.Set("{k}", "{v}")')
+    if auth_user:
+        print(f'\treq.SetBasicAuth("{auth_user}", "{auth_pass}")')
+    print("")
+    print("\tclient := &http.Client{}")
+    print("\tresp, err := client.Do(req)")
+    print("\tif err != nil {")
+    print("\t\tpanic(err)")
+    print("\t}")
+    print("\tdefer resp.Body.Close()")
+    print("")
+    print("\tdata, _ := io.ReadAll(resp.Body)")
+    print("\tfmt.Println(string(data))")
+    print("}")
 
-# Collect headers
-declare -a HEADERS
-for ((i = 1; i <= NUM_HEADERS; i++)); do
-  h=$(echo "$parse_result" | grep "^HEADER_${i}=" | sed "s/^HEADER_${i}=//")
-  HEADERS+=("$h")
-done
+elif target == "ruby":
+    print("require 'net/http'")
+    print("require 'uri'")
+    print("require 'json'")
+    print("")
+    print(f"uri = URI.parse('{url}')")
+    method_cap = method.capitalize()
+    print(f"request = Net::HTTP::{method_cap}.new(uri)")
+    for k, v in headers.items():
+        print(f"request['{k}'] = '{v}'")
+    if data:
+        print(f"request.body = '{data}'")
+    if auth_user:
+        print(f"request.basic_auth('{auth_user}', '{auth_pass}')")
+    print("")
+    print("response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|")
+    print("  http.request(request)")
+    print("end")
+    print("")
+    print("puts response.body")
 
-if [[ -z "$URL" ]]; then
-  echo "Error: could not parse URL from curl command" >&2
-  exit 1
-fi
-
-# Generate code based on language
-case "$LANG" in
-  fetch)
-    echo "const response = await fetch('${URL}', {"
-    echo "  method: '${METHOD}',"
-    if [[ $NUM_HEADERS -gt 0 ]]; then
-      echo "  headers: {"
-      for ((i = 0; i < ${#HEADERS[@]}; i++)); do
-        h="${HEADERS[$i]}"
-        key="${h%%:*}"
-        val="${h#*: }"
-        comma=","
-        [[ $i -eq $((${#HEADERS[@]} - 1)) ]] && comma=""
-        echo "    '${key}': '${val}'${comma}"
-      done
-      echo "  },"
-    fi
-    if [[ -n "$BODY" ]]; then
-      echo "  body: '${BODY}',"
-    fi
-    echo "});"
-    echo ""
-    echo "const data = await response.json();"
-    ;;
-
-  axios)
-    echo "const { data } = await axios({"
-    echo "  method: '$(echo "$METHOD" | tr '[:upper:]' '[:lower:]')',"
-    echo "  url: '${URL}',"
-    if [[ $NUM_HEADERS -gt 0 ]]; then
-      echo "  headers: {"
-      for ((i = 0; i < ${#HEADERS[@]}; i++)); do
-        h="${HEADERS[$i]}"
-        key="${h%%:*}"
-        val="${h#*: }"
-        comma=","
-        [[ $i -eq $((${#HEADERS[@]} - 1)) ]] && comma=""
-        echo "    '${key}': '${val}'${comma}"
-      done
-      echo "  },"
-    fi
-    if [[ -n "$BODY" ]]; then
-      echo "  data: '${BODY}',"
-    fi
-    echo "});"
-    ;;
-
-  python)
-    echo "import requests"
-    echo ""
-    if [[ $NUM_HEADERS -gt 0 ]]; then
-      echo "headers = {"
-      for ((i = 0; i < ${#HEADERS[@]}; i++)); do
-        h="${HEADERS[$i]}"
-        key="${h%%:*}"
-        val="${h#*: }"
-        comma=","
-        [[ $i -eq $((${#HEADERS[@]} - 1)) ]] && comma=""
-        echo "    '${key}': '${val}'${comma}"
-      done
-      echo "}"
-      echo ""
-    fi
-    method_lower=$(echo "$METHOD" | tr '[:upper:]' '[:lower:]')
-    echo -n "response = requests.${method_lower}('${URL}'"
-    if [[ $NUM_HEADERS -gt 0 ]]; then
-      echo -n ", headers=headers"
-    fi
-    if [[ -n "$BODY" ]]; then
-      echo -n ", data='${BODY}'"
-    fi
-    echo ")"
-    echo "data = response.json()"
-    ;;
-
-  go)
-    echo "package main"
-    echo ""
-    echo "import ("
-    echo '    "fmt"'
-    echo '    "io"'
-    echo '    "net/http"'
-    if [[ -n "$BODY" ]]; then
-      echo '    "strings"'
-    fi
-    echo ")"
-    echo ""
-    echo "func main() {"
-    if [[ -n "$BODY" ]]; then
-      echo "    body := strings.NewReader(\`${BODY}\`)"
-      echo "    req, err := http.NewRequest(\"${METHOD}\", \"${URL}\", body)"
-    else
-      echo "    req, err := http.NewRequest(\"${METHOD}\", \"${URL}\", nil)"
-    fi
-    echo "    if err != nil {"
-    echo "        panic(err)"
-    echo "    }"
-    for ((i = 0; i < ${#HEADERS[@]}; i++)); do
-      h="${HEADERS[$i]}"
-      key="${h%%:*}"
-      val="${h#*: }"
-      echo "    req.Header.Set(\"${key}\", \"${val}\")"
-    done
-    echo ""
-    echo "    client := &http.Client{}"
-    echo "    resp, err := client.Do(req)"
-    echo "    if err != nil {"
-    echo "        panic(err)"
-    echo "    }"
-    echo "    defer resp.Body.Close()"
-    echo ""
-    echo "    respBody, _ := io.ReadAll(resp.Body)"
-    echo "    fmt.Println(string(respBody))"
-    echo "}"
-    ;;
-
-  *)
-    echo "Error: unknown language: $LANG" >&2
-    echo "Supported: fetch, axios, python, go" >&2
-    exit 2
-    ;;
-esac
+PYEOF

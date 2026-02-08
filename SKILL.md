@@ -1,36 +1,38 @@
 ---
 name: curl-to-code
-description: Convert curl commands to equivalent code in JavaScript (fetch/axios), Python (requests), and Go (net/http).
+description: Converts curl commands to equivalent code in fetch, axios, requests, or other HTTP libraries
 version: 0.1.0
 license: Apache-2.0
 ---
 
 # curl-to-code
 
-Converts curl commands (like those copied from browser DevTools) into equivalent code in your target language.
+Converts curl commands into equivalent HTTP client code in your language of choice. Paste a curl command from browser DevTools and get clean, working code back.
 
 ## Purpose
 
-Every developer copies curl commands from browser DevTools but needs the code in their actual language. This skill parses a curl command and generates clean, idiomatic code for JavaScript (fetch or axios), Python (requests), and Go (net/http).
+Developers frequently copy curl commands from browser DevTools, API docs, or colleagues. Manually rewriting them into fetch, axios, or Python requests is tedious and error-prone. This tool automates the conversion.
 
-## See It in Action
+## Instructions
 
-See [examples/basic-example.md](examples/basic-example.md) for the simplest usage.
+When a user provides a curl command and wants it converted to code:
 
-## Examples Index
+1. Run `./scripts/run.sh` with the curl command as input and the target language/library as a flag
+2. Supported targets: `--fetch`, `--axios`, `--requests`, `--go`, `--ruby`
+3. The tool parses curl flags (`-X`, `-H`, `-d`, `--data`, `-u`, etc.) and generates equivalent code
+4. Output goes to stdout
 
-- `examples/basic-example.md` — Simple GET request conversion
-- `examples/common-patterns.md` — POST with JSON, auth headers, custom headers
-- `examples/advanced-usage.md` — Multi-header, form data, cookies
+## Inputs
 
-## Reference
+- A curl command via stdin or as a quoted argument
+- A target language flag (default: `--fetch`)
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| -q CURL_CMD | - | The curl command to convert (required if not piped) |
-| --lang LANG | fetch | Target language: fetch, axios, python, go |
-| --help | - | Show usage |
+## Outputs
 
-## Installation
+- Generated code to stdout, ready to copy-paste
 
-No dependencies. Pure bash + awk implementation.
+## Constraints
+
+- Supports common curl flags: `-X`, `-H`, `-d`, `--data`, `--data-raw`, `-u`, `--user`, `-b`, `--cookie`, `-L`, `-k`, `-o`
+- Does not execute the curl command
+- Does not handle curl flags for file uploads (`-F`) in this version

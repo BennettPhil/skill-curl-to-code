@@ -1,30 +1,30 @@
 # curl-to-code
 
-Convert curl commands to equivalent code in JavaScript (fetch/axios), Python (requests), and Go (net/http).
+Converts curl commands to equivalent HTTP client code in JavaScript (fetch/axios), Python (requests), Go, or Ruby.
 
 ## Quick Start
 
 ```bash
-./scripts/run.sh -q "curl -X GET https://api.example.com/users -H 'Authorization: Bearer token123'"
+./scripts/run.sh 'curl -X POST https://api.example.com/data -H "Content-Type: application/json" -d "{\"key\":\"value\"}"'
+```
+
+## Targets
+
+```bash
+./scripts/run.sh --fetch 'curl ...'      # JavaScript fetch (default)
+./scripts/run.sh --axios 'curl ...'      # JavaScript axios
+./scripts/run.sh --requests 'curl ...'   # Python requests
+./scripts/run.sh --go 'curl ...'         # Go net/http
+./scripts/run.sh --ruby 'curl ...'       # Ruby net/http
+```
+
+## Pipe from stdin
+
+```bash
+pbpaste | ./scripts/run.sh --requests
 ```
 
 ## Prerequisites
 
-- Bash 4+
-- awk (standard Unix)
-
-## Usage
-
-```bash
-# Convert to fetch (default)
-./scripts/run.sh -q "curl https://api.example.com/users"
-
-# Convert to Python requests
-./scripts/run.sh -q "curl https://api.example.com/users" --lang python
-
-# Convert to axios
-./scripts/run.sh -q "curl -X POST https://api.example.com/data -d '{\"key\":\"value\"}'" --lang axios
-
-# Convert to Go
-./scripts/run.sh -q "curl https://api.example.com" --lang go
-```
+- Python 3 (for curl command parsing)
+- No other dependencies
